@@ -1,6 +1,6 @@
 [package]
 name = "ruplace"
-version = "0.1.3"
+version = "0.1.4"
 authors = ["Diggory Blake <diggsey@googlemail.com>"]
 repository = "https://github.com/Diggsey/ruplace"
 license = "MIT OR Apache-2.0"

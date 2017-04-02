@@ -55,6 +55,9 @@ const PALETTE: [[u8; 4]; 17] = [
 ];
 
 fn color_to_index(color: &[u8]) -> u8 {
+    if color[3] < 128 {
+        return 16;
+    }
     PALETTE.iter().enumerate().map(|(index, p)| {
         (index, p.iter().zip(color.iter()).map(|(a, b)| {
             let diff = *a as i32 - *b as i32;
@@ -175,15 +178,15 @@ fn pick_random_pixel(board: &[u8], x: u32, y: u32, width: u32, height: u32, targ
     use rand::Rng;
     let mut count = 0;
     let mut solid = 0;
-    // let hex = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "b", "c", "d", "e", "f", "."];
+    let hex = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "b", "c", "d", "e", "f", "."];
     for py in 0..height {
-        // let mut sb = String::new();
-        // let mut st = String::new();
+        let mut sb = String::new();
+        let mut st = String::new();
         for px in 0..width {
             let bp = sample_board(board, x + px, y + py);
             let tp = sample_target(target_image, px, py, width);
-            // sb += hex[bp as usize];
-            // st += hex[tp as usize];
+            sb += hex[bp as usize];
+            st += hex[tp as usize];
             if tp != 16 && tp != bp {
                 count += 1;
             }
@@ -191,12 +194,12 @@ fn pick_random_pixel(board: &[u8], x: u32, y: u32, width: u32, height: u32, targ
                 solid += 1;
             }
         }
-        //println!("{} - {}", sb, st);
+        println!("{} - {}", sb, st);
     }
     let done = solid - count;
     let percentage_done = ((done*1000/solid) as f64)*0.1;
     println!("Progress: {}/{} ({:.1}%)", done, solid, percentage_done);
-
+    panic!();
     if count == 0 {
         return Err(RuplaceError);
     }
