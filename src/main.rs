@@ -11,6 +11,7 @@ use std::env;
 use std::collections::HashMap;
 use std::thread;
 use std::time::Duration;
+use std::error::Error;
 use std::process;
 
 use serde_json::Value;
@@ -72,20 +73,6 @@ fn color_to_index(color: &[u8]) -> u8 {
     }).min_by_key(|&(_, diff)| diff).expect("4 components").0 as u8
 }
 
-struct RuplaceError;
-
-impl From<reqwest::Error> for RuplaceError {
-    fn from(_: reqwest::Error) -> Self { RuplaceError }
-}
-
-impl From<png::DecodingError> for RuplaceError {
-    fn from(_: png::DecodingError) -> Self { RuplaceError }
-}
-
-impl From<std::io::Error> for RuplaceError {
-    fn from(_: std::io::Error) -> Self { RuplaceError }
-}
-
 fn main() {
     let mut args = env::args().skip(1);
     let username = args.next().expect("<username> argument");
@@ -106,7 +93,7 @@ fn main() {
     board.resize(1000*1000/2, 0u8);
 
     loop {
-        let mut try_place_pixel = || -> Result<(), RuplaceError> {
+        let mut try_place_pixel = || -> Result<(), Box<Error>> {
             let new_target: TargetJson = reqwest::get(TARGET_JSON_URL)?.json()?;
             if new_target.major_version > MAJOR_VERSION {
                 println!("New major version is available. Must update!");
@@ -143,7 +130,7 @@ fn main() {
                             target_image.push(color_to_index(color));
                         }
                     },
-                    _ => return Err(RuplaceError)
+                    _ => return Err("Reference image has unsupported color type".into())
                 }
             }
 
@@ -153,14 +140,7 @@ fn main() {
 
             println!("Placing pixel: ({}, {}) - {}", x, y, color);
 
-            let session = match reddit_login(&username, &password) {
-                Err(_) => {
-                    println!("Login error");
-                    return Err(RuplaceError);
-                }
-                Ok(x) => x
-            };
-
+            let session = reddit_login(&username, &password)?;
             let delay = place_pixel(x, y, color, &session)?;
 
             println!("Sleeping for {} seconds...", delay);
@@ -169,12 +149,10 @@ fn main() {
             Ok(())
         };
 
-        if try_place_pixel().is_ok() {
-            continue;
+        if let Err(e) = try_place_pixel() {
+            println!("{} - sleeping for 10 seconds", e);
+            thread::sleep(Duration::from_secs(10));
         }
-
-        println!("Image is complete or error occurred, sleeping for 10 seconds");
-        thread::sleep(Duration::from_secs(10));
     }
 }
 
@@ -191,7 +169,8 @@ fn sample_target(target: &[u8], x: u32, y: u32, width: u32) -> u8 {
     target[(y as usize)*(width as usize) + (x as usize)]
 }
 
-fn pick_random_pixel(board: &[u8], x: u32, y: u32, width: u32, height: u32, target_image: &[u8]) -> Result<(u32, u32, u8), RuplaceError> {
+fn pick_random_pixel(board: &[u8], x: u32, y: u32, width: u32, height: u32, target_image: &[u8])
+                     -> Result<(u32, u32, u8), Box<Error>> {
     use rand::Rng;
     let mut count = 0;
     let mut solid = 0;
@@ -218,7 +197,7 @@ fn pick_random_pixel(board: &[u8], x: u32, y: u32, width: u32, height: u32, targ
     println!("Progress: {}/{} ({:.1}%)", done, solid, percentage_done);
 
     if count == 0 {
-        return Err(RuplaceError);
+        return Err("Nothing to do (for now)".into());
     }
 
     let mut index = rand::thread_rng().gen_range(0, count);
@@ -235,10 +214,10 @@ fn pick_random_pixel(board: &[u8], x: u32, y: u32, width: u32, height: u32, targ
         }
     }
 
-    Err(RuplaceError)
+    Err("Nothing to do (for now)".into())
 }
 
-fn fetch_board(board: &mut Vec<u8>) -> Result<(), RuplaceError> {
+fn fetch_board(board: &mut Vec<u8>) -> Result<(), Box<Error>> {
     use std::io::Read;
     let mut file = reqwest::get("https://www.reddit.com/api/place/board-bitmap")?;
     file.read_exact(&mut board[0..4])?;
@@ -246,7 +225,7 @@ fn fetch_board(board: &mut Vec<u8>) -> Result<(), RuplaceError> {
     Ok(())
 }
 
-fn place_pixel(x: u32, y: u32, color: u8, session: &RedditSession) -> Result<u32, RuplaceError> {
+fn place_pixel(x: u32, y: u32, color: u8, session: &RedditSession) -> Result<u32, Box<Error>> {
     let client = Client::new()?;
 
     let mut params = HashMap::new();
@@ -258,10 +237,11 @@ fn place_pixel(x: u32, y: u32, color: u8, session: &RedditSession) -> Result<u32
         .form(&params)
         .send()?
         .json()?;
-    Ok(response.get("wait_seconds").ok_or(RuplaceError)?.as_u64().ok_or(RuplaceError)? as u32)
+    Ok(response.get("wait_seconds").and_then(Value::as_u64)
+                                   .ok_or("Did not receive wait time")? as u32)
 }
 
-fn reddit_login(username: &str, password: &str) -> Result<RedditSession, RuplaceError> {
+fn reddit_login(username: &str, password: &str) -> Result<RedditSession, Box<Error>> {
     let client = Client::new()?;
 
     let mut params = HashMap::new();
@@ -276,17 +256,18 @@ fn reddit_login(username: &str, password: &str) -> Result<RedditSession, Ruplace
         .send()?
         .json()?;
 
-    let inner = response.get("json").ok_or(RuplaceError)?;
-    let errors = inner.get("errors").ok_or(RuplaceError)?.as_array().ok_or(RuplaceError)?;
+    let inner = response.get("json").ok_or("No json returned from login")?;
+    let errors = inner.get("errors").and_then(Value::as_array).ok_or("No errors returned from login")?;
     if errors.len() > 0 {
-        println!("Login errors: {:?}", errors);
-        return Err(RuplaceError);
+        return Err(format!("Login errors: {:?}", errors).into());
     }
-    let data = inner.get("data").ok_or(RuplaceError)?;
+    let data = inner.get("data").ok_or("No data returned from login")?;
 
     Ok(RedditSession {
-        modhash: data.get("modhash").ok_or(RuplaceError)?.as_str().ok_or(RuplaceError)?.to_owned(),
-        cookie: data.get("cookie").ok_or(RuplaceError)?.as_str().ok_or(RuplaceError)?.to_owned()
+        modhash: data.get("modhash").and_then(Value::as_str)
+                                    .ok_or("No modhash returned from login")?.to_owned(),
+        cookie: data.get("cookie").and_then(Value::as_str)
+                                  .ok_or("No cookie returned from login")?.to_owned(),
     })
 }
 
