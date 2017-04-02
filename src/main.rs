@@ -161,7 +161,7 @@ fn main() {
             let (x, y, color) = pick_random_pixel(&board,
                 target.x, target.y, width, height, &target_image)?;
 
-            println!("Placing pixel: ({}, {}) - {}", x, y, color);
+            println!("Attempting to place pixel: ({}, {}) - {}", x, y, color);
 
             let session = reddit_login(&username, &password)?;
             let delay = place_pixel(x, y, color, &session)?;
