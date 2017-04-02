@@ -63,6 +63,12 @@ fn color_to_index(color: &[u8]) -> u8 {
     }).min_by_key(|&(_, diff)| diff).expect("4 components").0 as u8
 }
 
+struct RuplaceError;
+
+impl From<reqwest::Error> for RuplaceError {
+    fn from(_: reqwest::Error) -> Self { RuplaceError }
+}
+
 fn main() {
     let mut args = env::args().skip(1);
     let username = args.next().expect("<username> argument");
@@ -113,18 +119,20 @@ fn main() {
         }
 
         fetch_board(&mut board);
-        if let Some((x, y, color)) = pick_random_pixel(&board, target.x, target.y, width, height, &target_image) {
+        if let Ok((x, y, color)) = pick_random_pixel(&board, target.x, target.y, width, height, &target_image) {
             println!("Placing pixel: ({}, {}) - {}", x, y, color);
 
             let session = reddit_login(&username, &password).expect("Login failed");
-            let delay = place_pixel(x, y, color, &session);
 
-            println!("Sleeping for {} seconds...", delay);
-            thread::sleep(Duration::from_secs(delay as u64));
-        } else {
-            println!("Image is complete! Sleeping for 10 seconds");
-            thread::sleep(Duration::from_secs(10));
+            if let Ok(delay) = place_pixel(x, y, color, &session) {
+                println!("Sleeping for {} seconds...", delay);
+                thread::sleep(Duration::from_secs(delay as u64));
+                continue;
+            }
         }
+
+        println!("Image is complete or error occurred, sleeping for 10 seconds");
+        thread::sleep(Duration::from_secs(10));
     }
 }
 
@@ -141,7 +149,7 @@ fn sample_target(target: &[u8], x: u32, y: u32, width: u32) -> u8 {
     target[(y as usize)*(width as usize) + (x as usize)]
 }
 
-fn pick_random_pixel(board: &[u8], x: u32, y: u32, width: u32, height: u32, target_image: &[u8]) -> Option<(u32, u32, u8)> {
+fn pick_random_pixel(board: &[u8], x: u32, y: u32, width: u32, height: u32, target_image: &[u8]) -> Result<(u32, u32, u8), RuplaceError> {
     use rand::Rng;
     let mut count = 0;
     let mut solid = 0;
@@ -168,7 +176,7 @@ fn pick_random_pixel(board: &[u8], x: u32, y: u32, width: u32, height: u32, targ
     println!("Progress: {}/{} ({}%)", done, solid, percentage_done);
 
     if count == 0 {
-        return None;
+        return Err(RuplaceError);
     }
 
     let mut index = rand::thread_rng().gen_range(0, count);
@@ -179,13 +187,13 @@ fn pick_random_pixel(board: &[u8], x: u32, y: u32, width: u32, height: u32, targ
             if tp != 16 && tp != bp {
                 index -= 1;
                 if index == 0  {
-                    return Some((px + x, py + y, tp));
+                    return Ok((px + x, py + y, tp));
                 }
             }
         }
     }
 
-    unreachable!();
+    Err(RuplaceError)
 }
 
 fn fetch_board(board: &mut Vec<u8>) {
@@ -195,7 +203,7 @@ fn fetch_board(board: &mut Vec<u8>) {
     file.read_exact(&mut *board).expect("Failed to read board state");
 }
 
-fn place_pixel(x: u32, y: u32, color: u8, session: &RedditSession) -> u32 {
+fn place_pixel(x: u32, y: u32, color: u8, session: &RedditSession) -> Result<u32, RuplaceError> {
     let client = Client::new().expect("Failed to create HTTP client");
 
     let mut params = HashMap::new();
@@ -205,11 +213,9 @@ fn place_pixel(x: u32, y: u32, color: u8, session: &RedditSession) -> u32 {
 
     let response: Value = reddit_auth(client.post("https://www.reddit.com/api/place/draw.json"), session)
         .form(&params)
-        .send()
-        .expect("Failed to send draw request")
-        .json()
-        .expect("Failed to decode draw request response");
-    response.get("wait_seconds").expect("Invalid response json").as_u64().expect("Invalid response json") as u32
+        .send()?
+        .json()?;
+    Ok(response.get("wait_seconds").ok_or(RuplaceError)?.as_u64().ok_or(RuplaceError)? as u32)
 }
 
 fn reddit_login(username: &str, password: &str) -> Result<RedditSession, String> {
@@ -228,14 +234,14 @@ fn reddit_login(username: &str, password: &str) -> Result<RedditSession, String>
         .expect("Failed to send login request")
         .json()
         .expect("Failed to decode login response json");
-    
+
     let inner = response.get("json").expect("Invalid response json");
     let errors = inner.get("errors").expect("Invalid response json").as_array().expect("Invalid response json");
     if errors.len() > 0 {
         return Err(format!("{:?}", errors));
     }
     let data = inner.get("data").expect("Invalid response json");
-    
+
     return Ok(RedditSession {
         modhash: data.get("modhash").expect("Invalid response json").as_str().expect("Invalid response json").to_owned(),
         cookie: data.get("cookie").expect("Invalid response json").as_str().expect("Invalid response json").to_owned()
