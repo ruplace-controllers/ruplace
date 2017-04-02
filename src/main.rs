@@ -6,6 +6,7 @@ extern crate hyper;
 extern crate serde_derive;
 extern crate png;
 extern crate rand;
+extern crate rpassword;
 
 use std::env;
 use std::collections::HashMap;
@@ -76,9 +77,25 @@ fn color_to_index(color: &[u8]) -> u8 {
 }
 
 fn main() {
-    let mut args = env::args().skip(1);
-    let username = args.next().expect("<username> argument");
-    let password = args.next().expect("<password> argument");
+    let mut args = env::args().skip(1).fuse();
+    let mut username = args.next();
+    let mut password = args.next();
+
+    if username.is_none() {
+        println!("Enter username:");
+        let mut s = "".into();
+        std::io::stdin().read_line(&mut s).unwrap();
+        username = Some(s);
+    }
+
+    if password.is_none() {
+        println!("Enter password:");
+        let s = rpassword::read_password().unwrap();
+        password = Some(s);
+    }
+
+    let username = username.expect("<username> argument");
+    let password = password.expect("<password> argument");
 
     let mut target = TargetJson {
         major_version: MAJOR_VERSION,
