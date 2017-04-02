@@ -28,13 +28,14 @@ struct RedditSession {
     pub cookie: String
 }
 
-#[derive(Serialize, Deserialize, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 struct TargetJson {
     pub major_version: u32,
     pub minor_version: u32,
     pub x: u32,
     pub y: u32,
-    pub image: String
+    pub image: String,
+    pub fallbacks: Vec<String>,
 }
 
 const TARGET_JSON_URL: &'static str = "https://raw.githubusercontent.com/ruplace-controllers/ruplace-target/master/ruplace.json";
@@ -102,7 +103,8 @@ fn main() {
         minor_version: MINOR_VERSION,
         x: 0,
         y: 0,
-        image: String::new()
+        image: String::new(),
+        fallbacks: vec![],
     };
     let mut width = 0;
     let mut height = 0;
@@ -113,7 +115,21 @@ fn main() {
 
     loop {
         let mut try_place_pixel = || -> Result<(), Box<Error>> {
-            let new_target: TargetJson = reqwest::get(TARGET_JSON_URL)?.json()?;
+            let new_target: serde_json::Value = reqwest::get(TARGET_JSON_URL)?.json()?;
+            let new_target = new_target.as_object().ok_or("Json format error")?;
+            macro_rules! tr {
+                ($e:expr) => {
+                    ($e).ok_or("Json format error")?
+                }
+            }
+            let new_target = TargetJson {
+                major_version: tr!(tr!(new_target.get("major_version")).as_u64()) as u32,
+                minor_version: tr!(tr!(new_target.get("minor_version")).as_u64()) as u32,
+                x:             tr!(tr!(new_target.get("x")).as_u64()) as u32,
+                y:             tr!(tr!(new_target.get("y")).as_u64()) as u32,
+                image:         tr!(tr!(new_target.get("image")).as_str()).to_string(),
+                fallbacks:     vec![],
+            };
             if new_target.major_version > MAJOR_VERSION {
                 println!("New major version is available. Must update!");
                 process::exit(1);
