@@ -32,7 +32,7 @@ struct TargetJson {
     pub image: String
 }
 
-const TARGET_JSON_URL: &'static str = "https://gist.githubusercontent.com/Diggsey/5726659897ed409aab8322c36bb2a560/raw/ruplace.json";
+const TARGET_JSON_URL_RUST: &'static str = "https://gist.githubusercontent.com/Diggsey/5726659897ed409aab8322c36bb2a560/raw/ruplace.json";
 
 const PALETTE: [[u8; 4]; 17] = [
     [255, 255, 255, 255],
@@ -53,6 +53,14 @@ const PALETTE: [[u8; 4]; 17] = [
     [130,   0, 128, 255],
     [  0,   0,   0,   0],
 ];
+
+fn target_json_url() -> String {
+    if let Ok(target_url) = env::var("RUPLACE_TARGET") {
+        target_url
+    } else {
+        String::from(TARGET_JSON_URL_RUST)
+    }
+}
 
 fn color_to_index(color: &[u8]) -> u8 {
     if color[3] < 128 {
@@ -99,7 +107,8 @@ fn main() {
 
     loop {
         let mut try_place_pixel = || -> Result<(), RuplaceError> {
-            let new_target: TargetJson = reqwest::get(TARGET_JSON_URL)?.json()?;
+            let target_url = target_json_url();
+            let new_target: TargetJson = reqwest::get(&target_url)?.json()?;
             if new_target != target {
                 target = new_target;
                 let mut decoder = png::Decoder::new(reqwest::get(&target.image)?);
