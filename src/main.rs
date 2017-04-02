@@ -7,6 +7,7 @@ extern crate serde_derive;
 extern crate png;
 extern crate rand;
 extern crate rpassword;
+extern crate clap;
 
 use std::env;
 use std::collections::HashMap;
@@ -19,6 +20,7 @@ use serde_json::Value;
 use reqwest::{RequestBuilder, Client};
 use hyper::header::Cookie;
 use png::HasParameters;
+use clap::{Arg, App, SubCommand};
 
 header! { (XModhash, "x-modhash") => [String] }
 
@@ -78,9 +80,23 @@ fn color_to_index(color: &[u8]) -> u8 {
 }
 
 fn main() {
-    let mut args = env::args().skip(1).fuse();
-    let mut username = args.next();
-    let mut password = args.next();
+    let matches = App::new("ruplace")
+        .arg(Arg::with_name("config")
+            .short("c")
+            .long("config")
+            .value_name("URL")
+            .help("Set a custom JSON config URL")
+            .takes_value(true))
+        .arg(Arg::with_name("username")
+            .required(false)
+            .index(1))
+        .arg(Arg::with_name("password")
+            .required(false)
+            .index(2))
+        .get_matches();
+
+    let mut username = matches.value_of("username").map(|s| s.to_string());
+    let mut password = matches.value_of("password").map(|s| s.to_string());
 
     if username.is_none() {
         println!("Enter username:");
