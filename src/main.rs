@@ -11,6 +11,7 @@ use std::env;
 use std::collections::HashMap;
 use std::thread;
 use std::time::Duration;
+use std::process;
 
 use serde_json::Value;
 use reqwest::{RequestBuilder, Client};
@@ -27,12 +28,14 @@ struct RedditSession {
 
 #[derive(Serialize, Deserialize, Debug, Eq, PartialEq)]
 struct TargetJson {
+    pub major_version: u32,
+    pub minor_version: u32,
     pub x: u32,
     pub y: u32,
     pub image: String
 }
 
-const TARGET_JSON_URL: &'static str = "https://gist.githubusercontent.com/Diggsey/5726659897ed409aab8322c36bb2a560/raw/ruplace.json";
+const TARGET_JSON_URL: &'static str = "https://raw.githubusercontent.com/ruplace-controllers/ruplace-target/master/ruplace.json";
 
 const PALETTE: [[u8; 4]; 17] = [
     [255, 255, 255, 255],
@@ -53,6 +56,9 @@ const PALETTE: [[u8; 4]; 17] = [
     [130,   0, 128, 255],
     [  0,   0,   0,   0],
 ];
+
+const MAJOR_VERSION: u32 = 1;
+const MINOR_VERSION: u32 = 0;
 
 fn color_to_index(color: &[u8]) -> u8 {
     if color[3] < 128 {
@@ -86,6 +92,8 @@ fn main() {
     let password = args.next().expect("<password> argument");
 
     let mut target = TargetJson {
+        major_version: MAJOR_VERSION,
+        minor_version: MINOR_VERSION,
         x: 0,
         y: 0,
         image: String::new()
@@ -100,6 +108,15 @@ fn main() {
     loop {
         let mut try_place_pixel = || -> Result<(), RuplaceError> {
             let new_target: TargetJson = reqwest::get(TARGET_JSON_URL)?.json()?;
+            if new_target.major_version > MAJOR_VERSION {
+                println!("New major version is available. Must update!");
+                process::exit(1);
+            }
+
+            if new_target.minor_version > MINOR_VERSION {
+                println!("New minor version is available. Update when convenient.");
+            }
+
             if new_target != target {
                 target = new_target;
                 let mut decoder = png::Decoder::new(reqwest::get(&target.image)?);
