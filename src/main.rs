@@ -60,7 +60,7 @@ const PALETTE: [[u8; 4]; 17] = [
 ];
 
 const MAJOR_VERSION: u32 = 1;
-const MINOR_VERSION: u32 = 0;
+const MINOR_VERSION: u32 = 1;
 
 const DEBUG: bool = false;
 
