@@ -173,7 +173,7 @@ fn pick_random_pixel(board: &[u8], x: u32, y: u32, width: u32, height: u32, targ
     }
     let done = solid - count;
     let percentage_done = ((done*1000/solid) as f64)*0.1;
-    println!("Progress: {}/{} ({}%)", done, solid, percentage_done);
+    println!("Progress: {}/{} ({:.1}%)", done, solid, percentage_done);
 
     if count == 0 {
         return Err(RuplaceError);
