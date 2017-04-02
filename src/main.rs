@@ -77,7 +77,7 @@ fn color_to_index(color: &[u8]) -> u8 {
 }
 
 fn main() {
-    let mut args = env::args().skip(1);
+    let mut args = env::args().skip(1).fuse();
     let mut username = args.next();
     let mut password = args.next();
 
