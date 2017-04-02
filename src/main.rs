@@ -60,13 +60,13 @@ fn color_to_index(color: &[u8]) -> u8 {
             let diff = *a as i32 - *b as i32;
             diff*diff
         }).sum::<i32>())
-    }).min_by_key(|&(_, diff)| diff).unwrap().0 as u8
+    }).min_by_key(|&(_, diff)| diff).expect("4 components").0 as u8
 }
 
 fn main() {
     let mut args = env::args().skip(1);
-    let username = args.next().unwrap();
-    let password = args.next().unwrap();
+    let username = args.next().expect("<username> argument");
+    let password = args.next().expect("<password> argument");
 
     let mut target = TargetJson {
         x: 0,
@@ -81,17 +81,17 @@ fn main() {
     board.resize(1000*1000/2, 0u8);
 
     loop {
-        let new_target: TargetJson = reqwest::get(TARGET_JSON_URL).unwrap().json().unwrap();
+        let new_target: TargetJson = reqwest::get(TARGET_JSON_URL).expect("Failed to fetch target").json().expect("Invalid target json");
         if new_target != target {
             target = new_target;
-            let mut decoder = png::Decoder::new(reqwest::get(&target.image).unwrap());
+            let mut decoder = png::Decoder::new(reqwest::get(&target.image).expect("Failed to fetch target image"));
             decoder.set(png::TRANSFORM_EXPAND | png::TRANSFORM_GRAY_TO_RGB | png::TRANSFORM_PACKING | png::TRANSFORM_STRIP_16);
-            let (info, mut reader) = decoder.read_info().unwrap();
+            let (info, mut reader) = decoder.read_info().expect("Failed to decode target image");
             width = info.width;
             height = info.height;
             let mut buffer = Vec::new();
             buffer.resize(info.buffer_size(), 0u8);
-            reader.next_frame(&mut *buffer).unwrap();
+            reader.next_frame(&mut *buffer).expect("Failed to decode target image frame");
 
             target_image.truncate(0);
             target_image.reserve_exact((width*height) as usize);
@@ -113,16 +113,18 @@ fn main() {
         }
 
         fetch_board(&mut board);
-        let (x, y, color) = pick_random_pixel(&board, target.x, target.y, width, height, &target_image);
+        if let Some((x, y, color)) = pick_random_pixel(&board, target.x, target.y, width, height, &target_image) {
+            println!("Placing pixel: ({}, {}) - {}", x, y, color);
 
-        println!("Placing pixel: ({}, {}) - {}", x, y, color);
+            let session = reddit_login(&username, &password).expect("Login failed");
+            let delay = place_pixel(x, y, color, &session);
 
-        let session = reddit_login(&username, &password).unwrap();
-        let delay = place_pixel(x, y, color, &session);
-
-        println!("Sleeping for {} seconds...", delay);
-
-        thread::sleep(Duration::from_secs(delay as u64));
+            println!("Sleeping for {} seconds...", delay);
+            thread::sleep(Duration::from_secs(delay as u64));
+        } else {
+            println!("Image is complete! Sleeping for 10 seconds");
+            thread::sleep(Duration::from_secs(10));
+        }
     }
 }
 
@@ -139,7 +141,7 @@ fn sample_target(target: &[u8], x: u32, y: u32, width: u32) -> u8 {
     target[(y as usize)*(width as usize) + (x as usize)]
 }
 
-fn pick_random_pixel(board: &[u8], x: u32, y: u32, width: u32, height: u32, target_image: &[u8]) -> (u32, u32, u8) {
+fn pick_random_pixel(board: &[u8], x: u32, y: u32, width: u32, height: u32, target_image: &[u8]) -> Option<(u32, u32, u8)> {
     use rand::Rng;
     let mut count = 0;
     let mut solid = 0;
@@ -165,6 +167,10 @@ fn pick_random_pixel(board: &[u8], x: u32, y: u32, width: u32, height: u32, targ
     let percentage_done = ((done*1000/solid) as f64)*0.1;
     println!("Progress: {}/{} ({}%)", done, solid, percentage_done);
 
+    if count == 0 {
+        return None;
+    }
+
     let mut index = rand::thread_rng().gen_range(0, count);
     for py in 0..height {
         for px in 0..width {
@@ -173,7 +179,7 @@ fn pick_random_pixel(board: &[u8], x: u32, y: u32, width: u32, height: u32, targ
             if tp != 16 && tp != bp {
                 index -= 1;
                 if index == 0  {
-                    return (px + x, py + y, tp);
+                    return Some((px + x, py + y, tp));
                 }
             }
         }
@@ -184,13 +190,13 @@ fn pick_random_pixel(board: &[u8], x: u32, y: u32, width: u32, height: u32, targ
 
 fn fetch_board(board: &mut Vec<u8>) {
     use std::io::Read;
-    let mut file = reqwest::get("https://www.reddit.com/api/place/board-bitmap").unwrap();
-    file.read_exact(&mut board[0..4]).unwrap();
-    file.read_exact(&mut *board).unwrap();
+    let mut file = reqwest::get("https://www.reddit.com/api/place/board-bitmap").expect("Failed to fetch board state");
+    file.read_exact(&mut board[0..4]).expect("Failed to read board state");
+    file.read_exact(&mut *board).expect("Failed to read board state");
 }
 
 fn place_pixel(x: u32, y: u32, color: u8, session: &RedditSession) -> u32 {
-    let client = Client::new().unwrap();
+    let client = Client::new().expect("Failed to create HTTP client");
 
     let mut params = HashMap::new();
     params.insert("x", x);
@@ -200,14 +206,14 @@ fn place_pixel(x: u32, y: u32, color: u8, session: &RedditSession) -> u32 {
     let response: Value = reddit_auth(client.post("https://www.reddit.com/api/place/draw.json"), session)
         .form(&params)
         .send()
-        .unwrap()
+        .expect("Failed to send draw request")
         .json()
-        .unwrap();
-    response.get("wait_seconds").unwrap().as_u64().unwrap() as u32
+        .expect("Failed to decode draw request response");
+    response.get("wait_seconds").expect("Invalid response json").as_u64().expect("Invalid response json") as u32
 }
 
 fn reddit_login(username: &str, password: &str) -> Result<RedditSession, String> {
-    let client = Client::new().unwrap();
+    let client = Client::new().expect("Failed to create HTTP client");
 
     let mut params = HashMap::new();
     params.insert("op", "login-main");
@@ -219,20 +225,20 @@ fn reddit_login(username: &str, password: &str) -> Result<RedditSession, String>
     let response: Value = client.post(&format!("https://www.reddit.com/api/login/{}", username))
         .form(&params)
         .send()
-        .unwrap()
+        .expect("Failed to send login request")
         .json()
-        .unwrap();
+        .expect("Failed to decode login response json");
     
-    let inner = response.get("json").unwrap();
-    let errors = inner.get("errors").unwrap().as_array().unwrap();
+    let inner = response.get("json").expect("Invalid response json");
+    let errors = inner.get("errors").expect("Invalid response json").as_array().expect("Invalid response json");
     if errors.len() > 0 {
         return Err(format!("{:?}", errors));
     }
-    let data = inner.get("data").unwrap();
+    let data = inner.get("data").expect("Invalid response json");
     
     return Ok(RedditSession {
-        modhash: data.get("modhash").unwrap().as_str().unwrap().to_owned(),
-        cookie: data.get("cookie").unwrap().as_str().unwrap().to_owned()
+        modhash: data.get("modhash").expect("Invalid response json").as_str().expect("Invalid response json").to_owned(),
+        cookie: data.get("cookie").expect("Invalid response json").as_str().expect("Invalid response json").to_owned()
     })
 }
 
