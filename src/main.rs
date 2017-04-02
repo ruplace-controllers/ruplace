@@ -69,6 +69,14 @@ impl From<reqwest::Error> for RuplaceError {
     fn from(_: reqwest::Error) -> Self { RuplaceError }
 }
 
+impl From<png::DecodingError> for RuplaceError {
+    fn from(_: png::DecodingError) -> Self { RuplaceError }
+}
+
+impl From<std::io::Error> for RuplaceError {
+    fn from(_: std::io::Error) -> Self { RuplaceError }
+}
+
 fn main() {
     let mut args = env::args().skip(1);
     let username = args.next().expect("<username> argument");
@@ -87,48 +95,62 @@ fn main() {
     board.resize(1000*1000/2, 0u8);
 
     loop {
-        let new_target: TargetJson = reqwest::get(TARGET_JSON_URL).expect("Failed to fetch target").json().expect("Invalid target json");
-        if new_target != target {
-            target = new_target;
-            let mut decoder = png::Decoder::new(reqwest::get(&target.image).expect("Failed to fetch target image"));
-            decoder.set(png::TRANSFORM_EXPAND | png::TRANSFORM_GRAY_TO_RGB | png::TRANSFORM_PACKING | png::TRANSFORM_STRIP_16);
-            let (info, mut reader) = decoder.read_info().expect("Failed to decode target image");
-            width = info.width;
-            height = info.height;
-            let mut buffer = Vec::new();
-            buffer.resize(info.buffer_size(), 0u8);
-            reader.next_frame(&mut *buffer).expect("Failed to decode target image frame");
+        let mut try_place_pixel = || -> Result<(), RuplaceError> {
+            let new_target: TargetJson = reqwest::get(TARGET_JSON_URL)?.json()?;
+            if new_target != target {
+                target = new_target;
+                let mut decoder = png::Decoder::new(reqwest::get(&target.image)?);
+                decoder.set(png::TRANSFORM_EXPAND | png::TRANSFORM_GRAY_TO_RGB | png::TRANSFORM_PACKING | png::TRANSFORM_STRIP_16);
+                let (info, mut reader) = decoder.read_info()?;
+                width = info.width;
+                height = info.height;
+                let mut buffer = Vec::new();
+                buffer.resize(info.buffer_size(), 0u8);
+                reader.next_frame(&mut *buffer)?;
 
-            target_image.truncate(0);
-            target_image.reserve_exact((width*height) as usize);
+                target_image.truncate(0);
+                target_image.reserve_exact((width*height) as usize);
 
-            match info.color_type {
-                png::ColorType::RGB => {
-                    for color in buffer.chunks(3) {
-                        let c = [color[0], color[1], color[2], 255];
-                        target_image.push(color_to_index(&c));
-                    }
-                },
-                png::ColorType::RGBA => {
-                    for color in buffer.chunks(4) {
-                        target_image.push(color_to_index(color));
-                    }
-                },
-                _ => panic!()
+                match info.color_type {
+                    png::ColorType::RGB => {
+                        for color in buffer.chunks(3) {
+                            let c = [color[0], color[1], color[2], 255];
+                            target_image.push(color_to_index(&c));
+                        }
+                    },
+                    png::ColorType::RGBA => {
+                        for color in buffer.chunks(4) {
+                            target_image.push(color_to_index(color));
+                        }
+                    },
+                    _ => return Err(RuplaceError)
+                }
             }
-        }
 
-        fetch_board(&mut board);
-        if let Ok((x, y, color)) = pick_random_pixel(&board, target.x, target.y, width, height, &target_image) {
+            fetch_board(&mut board)?;
+            let (x, y, color) = pick_random_pixel(&board,
+                target.x, target.y, width, height, &target_image)?;
+
             println!("Placing pixel: ({}, {}) - {}", x, y, color);
 
-            let session = reddit_login(&username, &password).expect("Login failed");
+            let session = match reddit_login(&username, &password) {
+                Err(_) => {
+                    println!("Login error");
+                    return Err(RuplaceError);
+                }
+                Ok(x) => x
+            };
 
-            if let Ok(delay) = place_pixel(x, y, color, &session) {
-                println!("Sleeping for {} seconds...", delay);
-                thread::sleep(Duration::from_secs(delay as u64));
-                continue;
-            }
+            let delay = place_pixel(x, y, color, &session)?;
+
+            println!("Sleeping for {} seconds...", delay);
+            thread::sleep(Duration::from_secs(delay as u64));
+
+            Ok(())
+        };
+
+        if try_place_pixel().is_ok() {
+            continue;
         }
 
         println!("Image is complete or error occurred, sleeping for 10 seconds");
@@ -196,15 +218,16 @@ fn pick_random_pixel(board: &[u8], x: u32, y: u32, width: u32, height: u32, targ
     Err(RuplaceError)
 }
 
-fn fetch_board(board: &mut Vec<u8>) {
+fn fetch_board(board: &mut Vec<u8>) -> Result<(), RuplaceError> {
     use std::io::Read;
-    let mut file = reqwest::get("https://www.reddit.com/api/place/board-bitmap").expect("Failed to fetch board state");
-    file.read_exact(&mut board[0..4]).expect("Failed to read board state");
-    file.read_exact(&mut *board).expect("Failed to read board state");
+    let mut file = reqwest::get("https://www.reddit.com/api/place/board-bitmap")?;
+    file.read_exact(&mut board[0..4])?;
+    file.read_exact(&mut *board)?;
+    Ok(())
 }
 
 fn place_pixel(x: u32, y: u32, color: u8, session: &RedditSession) -> Result<u32, RuplaceError> {
-    let client = Client::new().expect("Failed to create HTTP client");
+    let client = Client::new()?;
 
     let mut params = HashMap::new();
     params.insert("x", x);
@@ -218,8 +241,8 @@ fn place_pixel(x: u32, y: u32, color: u8, session: &RedditSession) -> Result<u32
     Ok(response.get("wait_seconds").ok_or(RuplaceError)?.as_u64().ok_or(RuplaceError)? as u32)
 }
 
-fn reddit_login(username: &str, password: &str) -> Result<RedditSession, String> {
-    let client = Client::new().expect("Failed to create HTTP client");
+fn reddit_login(username: &str, password: &str) -> Result<RedditSession, RuplaceError> {
+    let client = Client::new()?;
 
     let mut params = HashMap::new();
     params.insert("op", "login-main");
@@ -230,21 +253,20 @@ fn reddit_login(username: &str, password: &str) -> Result<RedditSession, String>
 
     let response: Value = client.post(&format!("https://www.reddit.com/api/login/{}", username))
         .form(&params)
-        .send()
-        .expect("Failed to send login request")
-        .json()
-        .expect("Failed to decode login response json");
+        .send()?
+        .json()?;
 
-    let inner = response.get("json").expect("Invalid response json");
-    let errors = inner.get("errors").expect("Invalid response json").as_array().expect("Invalid response json");
+    let inner = response.get("json").ok_or(RuplaceError)?;
+    let errors = inner.get("errors").ok_or(RuplaceError)?.as_array().ok_or(RuplaceError)?;
     if errors.len() > 0 {
-        return Err(format!("{:?}", errors));
+        println!("Login errors: {:?}", errors);
+        return Err(RuplaceError);
     }
-    let data = inner.get("data").expect("Invalid response json");
+    let data = inner.get("data").ok_or(RuplaceError)?;
 
-    return Ok(RedditSession {
-        modhash: data.get("modhash").expect("Invalid response json").as_str().expect("Invalid response json").to_owned(),
-        cookie: data.get("cookie").expect("Invalid response json").as_str().expect("Invalid response json").to_owned()
+    Ok(RedditSession {
+        modhash: data.get("modhash").ok_or(RuplaceError)?.as_str().ok_or(RuplaceError)?.to_owned(),
+        cookie: data.get("cookie").ok_or(RuplaceError)?.as_str().ok_or(RuplaceError)?.to_owned()
     })
 }
 
