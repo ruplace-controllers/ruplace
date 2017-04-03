@@ -103,6 +103,16 @@ fn get_target_json(url: &str) -> Result<TargetJson, Box<Error>> {
         image:         tr!(tr!(new_target.get("image")).as_str()).to_string(),
         fallbacks:     fallbacks,
     };
+
+    if new_target.major_version > MAJOR_VERSION {
+        println!("New major version is available. Must update!");
+        process::exit(1);
+    }
+
+    if new_target.minor_version > MINOR_VERSION {
+        println!("New minor version is available. Update when convenient.");
+    }
+
     Ok(new_target)
 }
 
@@ -161,14 +171,6 @@ fn main() {
     loop {
         let mut try_place_pixel = || -> Result<(), Box<Error>> {
             let new_target = get_target_json(init_config)?;
-            if new_target.major_version > MAJOR_VERSION {
-                println!("New major version is available. Must update!");
-                process::exit(1);
-            }
-
-            if new_target.minor_version > MINOR_VERSION {
-                println!("New minor version is available. Update when convenient.");
-            }
 
             if new_target != target {
                 target = new_target;
