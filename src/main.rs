@@ -18,6 +18,7 @@ use std::process;
 use std::collections::VecDeque;
 use std::rc::Rc;
 use std::cell::RefCell;
+use std::collections::HashSet;
 
 use serde_json::Value;
 use reqwest::{RequestBuilder, Client};
@@ -209,7 +210,7 @@ fn try_place_pixel(root: &RefCell<Job>,
     let (x, y, color) = pick_random_pixel(&board,
         root.target.x, root.target.y, root.width, root.height, &root.target_image)?;
 
-    println!("Attempting to place pixel: ({}, {}) - {}", x, y, color);
+    println!("  Attempting to place pixel: ({}, {}) - {}", x, y, color);
 
     let session = reddit_login(&username, &password)?;
     let delay = place_pixel(x, y, color, &session)?;
@@ -268,15 +269,25 @@ fn main() {
         let mut queue = VecDeque::new();
         queue.push_front(root.clone());
 
+        let mut already_seen = HashSet::new();
+
         while !queue.is_empty() {
             let root = queue.pop_front().unwrap();
+            already_seen.insert(root.borrow().url.to_string());
 
             if let Err(e) = try_place_pixel(&root, &mut board, &username, &password) {
                 let emsg = format!("{}", e);
 
                 if emsg == TARGET_DONE {
                     for fb in &root.borrow().fallbacks {
-                        queue.push_back(fb.clone());
+                        let fb = fb.clone();
+                        let url = fb.borrow().url.to_string();
+                        if !already_seen.contains(&url) {
+                            queue.push_back(fb);
+                            already_seen.insert(url);
+                        } else if DEBUG {
+                            println!("  Skipping repeat target {}", url);
+                        }
                     }
                 } else {
                     queue.clear();
@@ -286,6 +297,8 @@ fn main() {
                     println!("{} - sleeping for 10 seconds", emsg);
                     thread::sleep(Duration::from_secs(10));
                 }
+            } else {
+                queue.clear();
             }
         }
         println!();
@@ -334,7 +347,7 @@ fn pick_random_pixel(board: &[u8], x: u32, y: u32, width: u32, height: u32, targ
     }
     let done = solid - count;
     let percentage_done = ((done*1000/solid) as f64)*0.1;
-    println!("Progress: {}/{} ({:.1}%)", done, solid, percentage_done);
+    println!("  Progress: {}/{} ({:.1}%)", done, solid, percentage_done);
 
     if count == 0 || DEBUG {
         return Err(TARGET_DONE.into());
