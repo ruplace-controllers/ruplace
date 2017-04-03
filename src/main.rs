@@ -16,6 +16,8 @@ use std::time::Duration;
 use std::error::Error;
 use std::process;
 use std::collections::VecDeque;
+use std::rc::Rc;
+use std::cell::RefCell;
 
 use serde_json::Value;
 use reqwest::{RequestBuilder, Client};
@@ -120,6 +122,104 @@ fn get_target_json(url: &str) -> Result<TargetJson, Box<Error>> {
     Ok(new_target)
 }
 
+struct Job {
+    url: String,
+    target: TargetJson,
+    width: u32,
+    height: u32,
+    target_image: Vec<u8>,
+    fallbacks: Vec<Rc<RefCell<Job>>>,
+}
+
+impl Job {
+    fn new(url: String) -> Self {
+        Job {
+            url: url,
+            target: TargetJson {
+                major_version: MAJOR_VERSION,
+                minor_version: MINOR_VERSION,
+                x: 0,
+                y: 0,
+                image: String::new(),
+                fallbacks: vec![],
+            },
+            width: 0,
+            height: 0,
+            target_image: Vec::new(),
+            fallbacks: Vec::new(),
+        }
+    }
+}
+
+fn try_place_pixel(root: &RefCell<Job>,
+                   mut board: &mut Vec<u8>,
+                   username: &str,
+                   password: &str) -> Result<(), Box<Error>> {
+    let new_target = get_target_json(&root.borrow().url)?;
+
+    if new_target != root.borrow().target {
+        let mut root = root.borrow_mut();
+        let root = &mut*root;
+
+        println!("Target config: {}", root.url);
+
+        root.target = new_target;
+        let mut decoder = png::Decoder::new(reqwest::get(&root.target.image)?);
+        decoder.set(png::TRANSFORM_EXPAND | png::TRANSFORM_GRAY_TO_RGB | png::TRANSFORM_PACKING | png::TRANSFORM_STRIP_16);
+        let (info, mut reader) = decoder.read_info()?;
+        root.width = info.width;
+        root.height = info.height;
+        let mut buffer = Vec::new();
+        buffer.resize(info.buffer_size(), 0u8);
+        reader.next_frame(&mut *buffer)?;
+
+        root.target_image.truncate(0);
+        root.target_image.reserve_exact((root.width * root.height) as usize);
+
+        root.fallbacks = root.target.fallbacks.iter()
+            .map(|s| Job::new(s.to_string()))
+            .map(|j| Rc::new(RefCell::new(j)))
+            .collect();
+
+        match info.color_type {
+            png::ColorType::RGB => {
+                for color in buffer.chunks(3) {
+                    let c = [color[0], color[1], color[2], 255];
+                    root.target_image.push(color_to_index(&c));
+                }
+            },
+            png::ColorType::RGBA => {
+                for color in buffer.chunks(4) {
+                    root.target_image.push(color_to_index(color));
+                }
+            },
+            _ => return Err("Reference image has unsupported color type".into())
+        }
+    }
+
+    let root = root.borrow();
+
+    if DEBUG {
+        println!("{:?}", root.target);
+    }
+
+    fetch_board(&mut board)?;
+    let (x, y, color) = pick_random_pixel(&board,
+        root.target.x, root.target.y, root.width, root.height, &root.target_image)?;
+
+    println!("Attempting to place pixel: ({}, {}) - {}", x, y, color);
+
+    let session = reddit_login(&username, &password)?;
+    let delay = place_pixel(x, y, color, &session)?;
+
+    println!("Sleeping for {} seconds...", delay);
+    thread::sleep(Duration::from_secs(delay as u64));
+
+    Ok(())
+}
+
+const TARGET_DONE: &'static str = "Nothing to do (for now)";
+
 fn main() {
     let matches = App::new("ruplace")
         .arg(Arg::with_name("config")
@@ -157,90 +257,34 @@ fn main() {
 
     let init_config = matches.value_of("config").unwrap_or(TARGET_JSON_URL);
 
-    struct Job {
-        url: String,
-        target: TargetJson,
-        width: u32,
-        height: u32,
-        target_image: Vec<u8>,
-        fallbacks: Vec<Job>,
-    }
-
     let mut board = Vec::new();
     board.resize(1000*1000/2, 0u8);
 
-    let mut root = Job {
-        url: init_config.to_string(),
-        target: TargetJson {
-            major_version: MAJOR_VERSION,
-            minor_version: MINOR_VERSION,
-            x: 0,
-            y: 0,
-            image: String::new(),
-            fallbacks: vec![],
-        },
-        width: 0,
-        height: 0,
-        target_image: Vec::new(),
-        fallbacks: Vec::new(),
-    };
+    let root = Rc::new(RefCell::new(Job::new(init_config.to_string())));
 
     loop {
-        let mut try_place_pixel = || -> Result<(), Box<Error>> {
-            let new_target = get_target_json(&root.url)?;
+        let mut queue = VecDeque::new();
+        queue.push_front(root.clone());
 
-            if new_target != root.target {
-                root.target = new_target;
-                let mut decoder = png::Decoder::new(reqwest::get(&root.target.image)?);
-                decoder.set(png::TRANSFORM_EXPAND | png::TRANSFORM_GRAY_TO_RGB | png::TRANSFORM_PACKING | png::TRANSFORM_STRIP_16);
-                let (info, mut reader) = decoder.read_info()?;
-                root.width = info.width;
-                root.height = info.height;
-                let mut buffer = Vec::new();
-                buffer.resize(info.buffer_size(), 0u8);
-                reader.next_frame(&mut *buffer)?;
+        while !queue.is_empty() {
+            let root = queue.pop_front().unwrap();
 
-                root.target_image.truncate(0);
-                root.target_image.reserve_exact((root.width * root.height) as usize);
+            if let Err(e) = try_place_pixel(&root, &mut board, &username, &password) {
+                let emsg = format!("{}", e);
 
-                match info.color_type {
-                    png::ColorType::RGB => {
-                        for color in buffer.chunks(3) {
-                            let c = [color[0], color[1], color[2], 255];
-                            root.target_image.push(color_to_index(&c));
-                        }
-                    },
-                    png::ColorType::RGBA => {
-                        for color in buffer.chunks(4) {
-                            root.target_image.push(color_to_index(color));
-                        }
-                    },
-                    _ => return Err("Reference image has unsupported color type".into())
+                if emsg == TARGET_DONE {
+                    for fb in &root.borrow().fallbacks {
+                        queue.push_back(fb.clone());
+                    }
+                } else {
+                    queue.clear();
+                }
+
+                if queue.is_empty() {
+                    println!("{} - sleeping for 10 seconds", emsg);
+                    thread::sleep(Duration::from_secs(10));
                 }
             }
-
-            if DEBUG {
-                println!("{:?}", root.target);
-            }
-
-            fetch_board(&mut board)?;
-            let (x, y, color) = pick_random_pixel(&board,
-                root.target.x, root.target.y, root.width, root.height, &root.target_image)?;
-
-            println!("Attempting to place pixel: ({}, {}) - {}", x, y, color);
-
-            let session = reddit_login(&username, &password)?;
-            let delay = place_pixel(x, y, color, &session)?;
-
-            println!("Sleeping for {} seconds...", delay);
-            thread::sleep(Duration::from_secs(delay as u64));
-
-            Ok(())
-        };
-
-        if let Err(e) = try_place_pixel() {
-            println!("{} - sleeping for 10 seconds", e);
-            thread::sleep(Duration::from_secs(10));
         }
     }
 }
@@ -290,7 +334,7 @@ fn pick_random_pixel(board: &[u8], x: u32, y: u32, width: u32, height: u32, targ
     println!("Progress: {}/{} ({:.1}%)", done, solid, percentage_done);
 
     if count == 0 || DEBUG {
-        return Err("Nothing to do (for now)".into());
+        return Err(TARGET_DONE.into());
     }
 
     let mut index = rand::thread_rng().gen_range(0, count);
@@ -307,7 +351,7 @@ fn pick_random_pixel(board: &[u8], x: u32, y: u32, width: u32, height: u32, targ
         }
     }
 
-    Err("Nothing to do (for now)".into())
+    Err(TARGET_DONE.into())
 }
 
 fn fetch_board(board: &mut Vec<u8>) -> Result<(), Box<Error>> {
