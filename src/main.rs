@@ -100,10 +100,12 @@ fn get_target_json(url: &str) -> Result<TargetJson, Box<Error>> {
     let fallbacks = fallbacks().unwrap_or_default();
 
     let new_target = TargetJson {
-        major_version: tr!(new_target.get("major_version"))
-                            .as_u64().map(|x| x as u32).unwrap_or(MAJOR_VERSION),
-        minor_version: tr!(new_target.get("minor_version"))
-                            .as_u64().map(|x| x as u32).unwrap_or(MINOR_VERSION),
+        major_version: new_target.get("major_version")
+                            .and_then(|x| x.as_u64())
+                            .map(|x| x as u32).unwrap_or(MAJOR_VERSION),
+        minor_version: new_target.get("minor_version")
+                            .and_then(|x| x.as_u64())
+                            .map(|x| x as u32).unwrap_or(MINOR_VERSION),
         x:             tr!(tr!(new_target.get("x")).as_u64()) as u32,
         y:             tr!(tr!(new_target.get("y")).as_u64()) as u32,
         image:         tr!(tr!(new_target.get("image")).as_str()).to_string(),
@@ -157,11 +159,11 @@ fn try_place_pixel(root: &RefCell<Job>,
                    password: &str) -> Result<(), Box<Error>> {
     let new_target = get_target_json(&root.borrow().url)?;
 
+    println!("Target: {}", root.borrow().url);
+
     if new_target != root.borrow().target {
         let mut root = root.borrow_mut();
         let root = &mut*root;
-
-        println!("Target config: {}", root.url);
 
         root.target = new_target;
         let mut decoder = png::Decoder::new(reqwest::get(&root.target.image)?);
@@ -286,6 +288,7 @@ fn main() {
                 }
             }
         }
+        println!();
     }
 }
 
