@@ -2,14 +2,11 @@ extern crate reqwest;
 extern crate serde_json;
 #[macro_use]
 extern crate hyper;
-#[macro_use]
-extern crate serde_derive;
 extern crate png;
 extern crate rand;
 extern crate rpassword;
 extern crate clap;
 
-use std::env;
 use std::collections::HashMap;
 use std::thread;
 use std::time::Duration;
@@ -24,7 +21,7 @@ use serde_json::Value;
 use reqwest::{RequestBuilder, Client};
 use hyper::header::Cookie;
 use png::HasParameters;
-use clap::{Arg, App, SubCommand};
+use clap::{Arg, App};
 
 header! { (XModhash, "x-modhash") => [String] }
 
@@ -157,10 +154,13 @@ impl Job {
 fn try_place_pixel(root: &RefCell<Job>,
                    mut board: &mut Vec<u8>,
                    username: &str,
-                   password: &str) -> Result<(), Box<Error>> {
+                   password: &str,
+                   silent: bool) -> Result<(), Box<Error>> {
     let new_target = get_target_json(&root.borrow().url)?;
 
-    println!("Target: {}", root.borrow().url);
+    if !silent {
+        println!("Target: {}", root.borrow().url);
+    }
 
     if new_target != root.borrow().target {
         let mut root = root.borrow_mut();
@@ -208,14 +208,27 @@ fn try_place_pixel(root: &RefCell<Job>,
 
     fetch_board(&mut board)?;
     let (x, y, color) = pick_random_pixel(&board,
-        root.target.x, root.target.y, root.width, root.height, &root.target_image)?;
+                                          root.target.x,
+                                          root.target.y,
+                                          root.width,
+                                          root.height,
+                                          &root.target_image,
+                                          silent)?;
 
-    println!("  Attempting to place pixel: ({}, {}) - {}", x, y, color);
+    if !silent {
+        println!("  Attempting to place pixel: ({}, {}) - {}", x, y, color);
+    }
 
     let session = reddit_login(&username, &password)?;
     let delay = place_pixel(x, y, color, &session)?;
 
+    if silent {
+        println!("Target: {}", root.url);
+        println!("  Placed pixel: ({}, {}) - {}", x, y, color);
+    }
+
     println!("Sleeping for {} seconds...", delay);
+    println!();
     thread::sleep(Duration::from_secs(delay as u64));
 
     Ok(())
@@ -237,6 +250,10 @@ fn main() {
         .arg(Arg::with_name("password")
             .required(false)
             .index(2))
+        .arg(Arg::with_name("silent")
+            .short("s")
+            .long("silent")
+            .help("Set the bot to silent mode if no pixel got placed"))
         .get_matches();
 
     let mut username = matches.value_of("username").map(|s| s.to_string());
@@ -259,49 +276,59 @@ fn main() {
     let password = password.expect("<password> argument");
 
     let init_config = matches.value_of("config").unwrap_or(TARGET_JSON_URL);
+    let silent = matches.is_present("silent");
 
     let mut board = Vec::new();
     board.resize(1000*1000/2, 0u8);
 
     let root = Rc::new(RefCell::new(Job::new(init_config.to_string())));
 
+    if silent {
+        println!("Silent mode activated - you will only see output in case of a pixel placement or error");
+    }
+    println!("Starting the main loop");
     loop {
         let mut queue = VecDeque::new();
         queue.push_front(root.clone());
-
         let mut already_seen = HashSet::new();
 
         while !queue.is_empty() {
             let root = queue.pop_front().unwrap();
             already_seen.insert(root.borrow().url.to_string());
 
-            if let Err(e) = try_place_pixel(&root, &mut board, &username, &password) {
-                let emsg = format!("{}", e);
+            let e = try_place_pixel(&root, &mut board, &username, &password, silent);
+            match e {
+                Err(e) => {
+                    let emsg = format!("{}", e);
 
-                if emsg == TARGET_DONE {
-                    for fb in &root.borrow().fallbacks {
-                        let fb = fb.clone();
-                        let url = fb.borrow().url.to_string();
-                        if !already_seen.contains(&url) {
-                            queue.push_back(fb);
-                            already_seen.insert(url);
-                        } else if DEBUG {
-                            println!("  Skipping repeat target {}", url);
+                    if emsg == TARGET_DONE {
+                        for fb in &root.borrow().fallbacks {
+                            let fb = fb.clone();
+                            let url = fb.borrow().url.to_string();
+                            if !already_seen.contains(&url) {
+                                queue.push_back(fb);
+                                already_seen.insert(url);
+                            } else if DEBUG {
+                                println!("  Skipping repeat target {}", url);
+                            }
                         }
+                    } else {
+                        queue.clear();
                     }
-                } else {
+
+                    if queue.is_empty() {
+                        if (emsg != TARGET_DONE) || !silent {
+                            println!("{} - sleeping for 10 seconds", emsg);
+                            println!();
+                        }
+                        thread::sleep(Duration::from_secs(10));
+                    }
+                }
+                Ok(_) => {
                     queue.clear();
                 }
-
-                if queue.is_empty() {
-                    println!("{} - sleeping for 10 seconds", emsg);
-                    thread::sleep(Duration::from_secs(10));
-                }
-            } else {
-                queue.clear();
             }
         }
-        println!();
     }
 }
 
@@ -318,8 +345,13 @@ fn sample_target(target: &[u8], x: u32, y: u32, width: u32) -> u8 {
     target[(y as usize)*(width as usize) + (x as usize)]
 }
 
-fn pick_random_pixel(board: &[u8], x: u32, y: u32, width: u32, height: u32, target_image: &[u8])
-                     -> Result<(u32, u32, u8), Box<Error>> {
+fn pick_random_pixel(board: &[u8],
+                     x: u32,
+                     y: u32,
+                     width: u32,
+                     height: u32,
+                     target_image: &[u8],
+                     silent: bool) -> Result<(u32, u32, u8), Box<Error>> {
     use rand::Rng;
     let mut count = 0;
     let mut solid = 0;
@@ -347,7 +379,9 @@ fn pick_random_pixel(board: &[u8], x: u32, y: u32, width: u32, height: u32, targ
     }
     let done = solid - count;
     let percentage_done = ((done*1000/solid) as f64)*0.1;
-    println!("  Progress: {}/{} ({:.1}%)", done, solid, percentage_done);
+    if (done != solid) || !silent {
+        println!("  Progress: {}/{} ({:.1}%)", done, solid, percentage_done);
+    }
 
     if count == 0 || DEBUG {
         return Err(TARGET_DONE.into());
