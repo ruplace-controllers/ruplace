@@ -233,10 +233,10 @@ fn pick_random_pixel(board: &[u8], x: u32, y: u32, width: u32, height: u32, targ
             let bp = sample_board(board, x + px, y + py);
             let tp = sample_target(target_image, px, py, width);
             if tp != 16 && tp != bp {
-                index -= 1;
                 if index == 0  {
                     return Ok((px + x, py + y, tp));
                 }
+                index -= 1;
             }
         }
     }
