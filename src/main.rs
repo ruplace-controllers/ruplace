@@ -79,6 +79,33 @@ fn color_to_index(color: &[u8]) -> u8 {
     }).min_by_key(|&(_, diff)| diff).expect("4 components").0 as u8
 }
 
+fn get_target_json(url: &str) -> Result<TargetJson, Box<Error>> {
+    let new_target: serde_json::Value = reqwest::get(url)?.json()?;
+    let new_target = new_target.as_object().ok_or("Json format error")?;
+    macro_rules! tr {
+        ($e:expr) => {
+            ($e).ok_or("Json format error")?
+        }
+    }
+
+    let fallbacks = tr!(tr!(tr!(new_target.get("fallbacks")).as_array())
+        .iter()
+        .map(|x| x.as_str().map(|x| x.to_string()))
+        .collect::<Option<Vec<String>>>());
+
+    let new_target = TargetJson {
+        major_version: tr!(new_target.get("major_version"))
+                            .as_u64().map(|x| x as u32).unwrap_or(MAJOR_VERSION),
+        minor_version: tr!(new_target.get("minor_version"))
+                            .as_u64().map(|x| x as u32).unwrap_or(MINOR_VERSION),
+        x:             tr!(tr!(new_target.get("x")).as_u64()) as u32,
+        y:             tr!(tr!(new_target.get("y")).as_u64()) as u32,
+        image:         tr!(tr!(new_target.get("image")).as_str()).to_string(),
+        fallbacks:     fallbacks,
+    };
+    Ok(new_target)
+}
+
 fn main() {
     let matches = App::new("ruplace")
         .arg(Arg::with_name("config")
@@ -133,29 +160,7 @@ fn main() {
 
     loop {
         let mut try_place_pixel = || -> Result<(), Box<Error>> {
-            let new_target: serde_json::Value = reqwest::get(init_config)?.json()?;
-            let new_target = new_target.as_object().ok_or("Json format error")?;
-            macro_rules! tr {
-                ($e:expr) => {
-                    ($e).ok_or("Json format error")?
-                }
-            }
-
-            let fallbacks = tr!(tr!(tr!(new_target.get("fallbacks")).as_array())
-                .iter()
-                .map(|x| x.as_str().map(|x| x.to_string()))
-                .collect::<Option<Vec<String>>>());
-
-            let new_target = TargetJson {
-                major_version: tr!(new_target.get("major_version"))
-                                   .as_u64().map(|x| x as u32).unwrap_or(MAJOR_VERSION),
-                minor_version: tr!(new_target.get("minor_version"))
-                                   .as_u64().map(|x| x as u32).unwrap_or(MINOR_VERSION),
-                x:             tr!(tr!(new_target.get("x")).as_u64()) as u32,
-                y:             tr!(tr!(new_target.get("y")).as_u64()) as u32,
-                image:         tr!(tr!(new_target.get("image")).as_str()).to_string(),
-                fallbacks:     fallbacks,
-            };
+            let new_target = get_target_json(init_config)?;
             if new_target.major_version > MAJOR_VERSION {
                 println!("New major version is available. Must update!");
                 process::exit(1);
