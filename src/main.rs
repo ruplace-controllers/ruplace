@@ -15,6 +15,7 @@ use std::thread;
 use std::time::Duration;
 use std::error::Error;
 use std::process;
+use std::collections::VecDeque;
 
 use serde_json::Value;
 use reqwest::{RequestBuilder, Client};
@@ -88,10 +89,13 @@ fn get_target_json(url: &str) -> Result<TargetJson, Box<Error>> {
         }
     }
 
-    let fallbacks = tr!(tr!(tr!(new_target.get("fallbacks")).as_array())
-        .iter()
-        .map(|x| x.as_str().map(|x| x.to_string()))
-        .collect::<Option<Vec<String>>>());
+    let fallbacks = || -> Result<Vec<String>, Box<Error>> {
+        Ok(tr!(tr!(tr!(new_target.get("fallbacks")).as_array())
+            .iter()
+            .map(|x| x.as_str().map(|x| x.to_string()))
+            .collect::<Option<Vec<String>>>()))
+    };
+    let fallbacks = fallbacks().unwrap_or_default();
 
     let new_target = TargetJson {
         major_version: tr!(new_target.get("major_version"))
@@ -153,49 +157,62 @@ fn main() {
 
     let init_config = matches.value_of("config").unwrap_or(TARGET_JSON_URL);
 
-    let mut target = TargetJson {
-        major_version: MAJOR_VERSION,
-        minor_version: MINOR_VERSION,
-        x: 0,
-        y: 0,
-        image: String::new(),
-        fallbacks: vec![],
-    };
-    let mut width = 0;
-    let mut height = 0;
-    let mut target_image = Vec::new();
+    struct Job {
+        url: String,
+        target: TargetJson,
+        width: u32,
+        height: u32,
+        target_image: Vec<u8>,
+        fallbacks: Vec<Job>,
+    }
 
     let mut board = Vec::new();
     board.resize(1000*1000/2, 0u8);
 
+    let mut root = Job {
+        url: init_config.to_string(),
+        target: TargetJson {
+            major_version: MAJOR_VERSION,
+            minor_version: MINOR_VERSION,
+            x: 0,
+            y: 0,
+            image: String::new(),
+            fallbacks: vec![],
+        },
+        width: 0,
+        height: 0,
+        target_image: Vec::new(),
+        fallbacks: Vec::new(),
+    };
+
     loop {
         let mut try_place_pixel = || -> Result<(), Box<Error>> {
-            let new_target = get_target_json(init_config)?;
+            let new_target = get_target_json(&root.url)?;
 
-            if new_target != target {
-                target = new_target;
-                let mut decoder = png::Decoder::new(reqwest::get(&target.image)?);
+            if new_target != root.target {
+                root.target = new_target;
+                let mut decoder = png::Decoder::new(reqwest::get(&root.target.image)?);
                 decoder.set(png::TRANSFORM_EXPAND | png::TRANSFORM_GRAY_TO_RGB | png::TRANSFORM_PACKING | png::TRANSFORM_STRIP_16);
                 let (info, mut reader) = decoder.read_info()?;
-                width = info.width;
-                height = info.height;
+                root.width = info.width;
+                root.height = info.height;
                 let mut buffer = Vec::new();
                 buffer.resize(info.buffer_size(), 0u8);
                 reader.next_frame(&mut *buffer)?;
 
-                target_image.truncate(0);
-                target_image.reserve_exact((width*height) as usize);
+                root.target_image.truncate(0);
+                root.target_image.reserve_exact((root.width * root.height) as usize);
 
                 match info.color_type {
                     png::ColorType::RGB => {
                         for color in buffer.chunks(3) {
                             let c = [color[0], color[1], color[2], 255];
-                            target_image.push(color_to_index(&c));
+                            root.target_image.push(color_to_index(&c));
                         }
                     },
                     png::ColorType::RGBA => {
                         for color in buffer.chunks(4) {
-                            target_image.push(color_to_index(color));
+                            root.target_image.push(color_to_index(color));
                         }
                     },
                     _ => return Err("Reference image has unsupported color type".into())
@@ -203,12 +220,12 @@ fn main() {
             }
 
             if DEBUG {
-                println!("{:?}", target);
+                println!("{:?}", root.target);
             }
 
             fetch_board(&mut board)?;
             let (x, y, color) = pick_random_pixel(&board,
-                target.x, target.y, width, height, &target_image)?;
+                root.target.x, root.target.y, root.width, root.height, &root.target_image)?;
 
             println!("Attempting to place pixel: ({}, {}) - {}", x, y, color);
 
